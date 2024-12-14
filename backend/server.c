@@ -1,10 +1,9 @@
+#include <microhttpd.h>
 #include <stdio.h>
-#include <stdlib.h>
 #include <string.h>
-#include <winsock2.h>
+#include <stdlib.h>
 
 #define PORT 8080
-#define MAX_CLIENTS 5
 
 // Medicine structure
 typedef struct {
@@ -13,172 +12,116 @@ typedef struct {
     float price;
 } Medicine;
 
-Medicine medicines[100];  // Array to hold medicines
-int medicine_count = 0;   // Count of medicines
+Medicine medicines[100];
+int medicine_count = 0;
 
-// Function to handle client requests
-void handleClient(SOCKET client_socket) {
-    char buffer[1024];
-    int bytesReceived;
+// Helper: Parse POST data
+void parse_post_data(const char *data, int *id, char *name, float *price) {
+    sscanf(data, "id=%d&name=%49[^&]&price=%f", id, name, price);
+}
 
-    // Read the client's request
-    bytesReceived = recv(client_socket, buffer, sizeof(buffer) - 1, 0);
-    if (bytesReceived <= 0) {
-        return;
-    }
-    buffer[bytesReceived] = '\0';
-    
-    printf("Received request: %s\n", buffer);
+// Handler for HTTP requests
+int handle_request(void *cls, struct MHD_Connection *connection,
+                   const char *url, const char *method, 
+                   const char *version, const char *upload_data, 
+                   size_t *upload_data_size, void **con_cls) {
+    static int post_recieved = 0;
+    char response_buffer[2048] = "";
+    const char *response_text;
+    struct MHD_Response *response;
+    int ret;
 
-    // Handle different client commands
-    if (strcmp(buffer, "insert") == 0) {
-        // Insert Medicine
-        send(client_socket, "Enter Medicine ID: ", 18, 0);
-        recv(client_socket, buffer, sizeof(buffer), 0);
-        int id = atoi(buffer);
-        
-        send(client_socket, "Enter Medicine Name: ", 21, 0);
-        recv(client_socket, buffer, sizeof(buffer), 0);
-        char name[50];
-        strcpy(name, buffer);
+    // Handle POST data
+    if (strcmp(method, "POST") == 0) {
+        if (*upload_data_size > 0) {
+            int id;
+            char name[50];
+            float price;
 
-        send(client_socket, "Enter Medicine Price: ", 22, 0);
-        recv(client_socket, buffer, sizeof(buffer), 0);
-        float price = atof(buffer);
-
-        medicines[medicine_count].id = id;
-        strcpy(medicines[medicine_count].name, name);
-        medicines[medicine_count].price = price;
-        medicine_count++;
-
-        send(client_socket, "Medicine inserted successfully!", 30, 0);
-    } else if (strcmp(buffer, "delete") == 0) {
-        // Delete Medicine
-        send(client_socket, "Enter Medicine ID to delete: ", 27, 0);
-        recv(client_socket, buffer, sizeof(buffer), 0);
-        int id = atoi(buffer);
-
-        int found = 0;
-        for (int i = 0; i < medicine_count; i++) {
-            if (medicines[i].id == id) {
-                for (int j = i; j < medicine_count - 1; j++) {
-                    medicines[j] = medicines[j + 1];
+            parse_post_data(upload_data, &id, name, &price);
+            if (strcmp(url, "/insert") == 0) {
+                medicines[medicine_count].id = id;
+                strcpy(medicines[medicine_count].name, name);
+                medicines[medicine_count].price = price;
+                medicine_count++;
+                sprintf(response_buffer, "Medicine inserted: ID=%d, Name=%s, Price=%.2f", id, name, price);
+            } else if (strcmp(url, "/update") == 0) {
+                int found = 0;
+                for (int i = 0; i < medicine_count; i++) {
+                    if (medicines[i].id == id) {
+                        strcpy(medicines[i].name, name);
+                        medicines[i].price = price;
+                        found = 1;
+                        sprintf(response_buffer, "Medicine updated: ID=%d, Name=%s, Price=%.2f", id, name, price);
+                        break;
+                    }
                 }
-                medicine_count--;
-                found = 1;
-                break;
+                if (!found) {
+                    strcpy(response_buffer, "Medicine ID not found for update.");
+                }
             }
-        }
-
-        if (found) {
-            send(client_socket, "Medicine deleted successfully!", 30, 0);
-        } else {
-            send(client_socket, "Medicine not found!", 21, 0);
-        }
-    } else if (strcmp(buffer, "update") == 0) {
-        // Update Medicine
-        send(client_socket, "Enter Medicine ID to update: ", 27, 0);
-        recv(client_socket, buffer, sizeof(buffer), 0);
-        int id = atoi(buffer);
-
-        int found = 0;
-        for (int i = 0; i < medicine_count; i++) {
-            if (medicines[i].id == id) {
-                send(client_socket, "Enter new Medicine Name: ", 24, 0);
-                recv(client_socket, buffer, sizeof(buffer), 0);
-                strcpy(medicines[i].name, buffer);
-
-                send(client_socket, "Enter new Medicine Price: ", 25, 0);
-                recv(client_socket, buffer, sizeof(buffer), 0);
-                medicines[i].price = atof(buffer);
-
-                found = 1;
-                break;
-            }
-        }
-
-        if (found) {
-            send(client_socket, "Medicine updated successfully!", 30, 0);
-        } else {
-            send(client_socket, "Medicine not found!", 21, 0);
-        }
-    } else if (strcmp(buffer, "list") == 0) {
-        // List all Medicines
-        if (medicine_count == 0) {
-            send(client_socket, "No medicines available.", 23, 0);
-        } else {
-            char medicine_list[1024] = "";
-            for (int i = 0; i < medicine_count; i++) {
-                char temp[100];
-                sprintf(temp, "ID: %d, Name: %s, Price: %.2f\n", medicines[i].id, medicines[i].name, medicines[i].price);
-                strcat(medicine_list, temp);
-            }
-            send(client_socket, medicine_list, strlen(medicine_list), 0);
+            *upload_data_size = 0;
+            post_recieved = 1;
+            return MHD_YES;
         }
     }
 
-    // Close the connection after handling the request
-    closesocket(client_socket);
+    // Handle GET requests
+    if (strcmp(method, "GET") == 0) {
+        if (strcmp(url, "/list") == 0) {
+            if (medicine_count == 0) {
+                strcpy(response_buffer, "No medicines available.");
+            } else {
+                for (int i = 0; i < medicine_count; i++) {
+                    char temp[256];
+                    sprintf(temp, "ID: %d, Name: %s, Price: %.2f\n", medicines[i].id, medicines[i].name, medicines[i].price);
+                    strcat(response_buffer, temp);
+                }
+            }
+        } else if (strncmp(url, "/delete?", 8) == 0) {
+            int id_to_delete;
+            sscanf(url, "/delete?id=%d", &id_to_delete);
+            int found = 0;
+            for (int i = 0; i < medicine_count; i++) {
+                if (medicines[i].id == id_to_delete) {
+                    for (int j = i; j < medicine_count - 1; j++) {
+                        medicines[j] = medicines[j + 1];
+                    }
+                    medicine_count--;
+                    found = 1;
+                    break;
+                }
+            }
+            if (found) {
+                sprintf(response_buffer, "Medicine with ID=%d deleted.", id_to_delete);
+            } else {
+                sprintf(response_buffer, "Medicine with ID=%d not found.", id_to_delete);
+            }
+        } else {
+            strcpy(response_buffer, "Invalid endpoint. Use /list, /insert, /delete, or /update.");
+        }
+    }
+
+    response_text = response_buffer;
+    response = MHD_create_response_from_buffer(strlen(response_text), (void*)response_text, MHD_RESPMEM_PERSISTENT);
+    ret = MHD_queue_response(connection, MHD_HTTP_OK, response);
+    MHD_destroy_response(response);
+    return ret;
 }
 
 int main() {
-    WSADATA wsaData;
-    SOCKET server_socket, client_socket;
-    struct sockaddr_in server_addr, client_addr;
-    int client_len = sizeof(client_addr);
+    struct MHD_Daemon *server;
 
-    // Initialize Winsock
-    if (WSAStartup(MAKEWORD(2, 2), &wsaData) != 0) {
-        printf("WSAStartup failed\n");
+    // Start the HTTP server
+    server = MHD_start_daemon(MHD_USE_SELECT_INTERNALLY, PORT, NULL, NULL,
+                              &handle_request, NULL, MHD_OPTION_END);
+    if (!server) {
+        printf("Failed to start server\n");
         return 1;
     }
 
-    // Create a socket
-    server_socket = socket(AF_INET, SOCK_STREAM, 0);
-    if (server_socket == INVALID_SOCKET) {
-        printf("Socket creation failed\n");
-        WSACleanup();
-        return 1;
-    }
-
-    // Setup the server address
-    server_addr.sin_family = AF_INET;
-    server_addr.sin_addr.s_addr = INADDR_ANY;
-    server_addr.sin_port = htons(PORT);
-
-    // Bind the socket
-    if (bind(server_socket, (struct sockaddr*)&server_addr, sizeof(server_addr)) == SOCKET_ERROR) {
-        printf("Bind failed\n");
-        closesocket(server_socket);
-        WSACleanup();
-        return 1;
-    }
-
-    // Listen for incoming connections
-    if (listen(server_socket, MAX_CLIENTS) == SOCKET_ERROR) {
-        printf("Listen failed\n");
-        closesocket(server_socket);
-        WSACleanup();
-        return 1;
-    }
-
-    printf("Server listening on port %d...\n", PORT);
-
-    // Accept connections
-    while (1) {
-        client_socket = accept(server_socket, (struct sockaddr*)&client_addr, &client_len);
-        if (client_socket == INVALID_SOCKET) {
-            printf("Accept failed\n");
-            closesocket(server_socket);
-            WSACleanup();
-            return 1;
-        }
-
-        // Handle the client request
-        handleClient(client_socket);
-    }
-
-    closesocket(server_socket);
-    WSACleanup();
+    printf("Server running on http://localhost:%d\n", PORT);
+    getchar();  // Keep the server running
+    MHD_stop_daemon(server);
     return 0;
 }
